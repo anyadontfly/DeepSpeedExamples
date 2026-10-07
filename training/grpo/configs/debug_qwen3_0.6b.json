@@ -1,0 +1,50 @@
+{
+    "model": {
+        "model_name_or_path": "Qwen/Qwen3-0.6B",
+        "dtype": "bfloat16",
+        "attn_implementation": "sdpa",
+        "gradient_checkpointing": true
+    },
+    "rollout": {
+        "engine": "hybrid_engine",
+        "multi_turn": true,
+        "max_turns": 4,
+        "max_context_len": 16384,
+        "max_new_tokens": 4096,
+        "temperature": 1.0,
+        "n_samples_per_prompt": 4,
+        "generate_batch_size": 8,
+        "enable_profiling": true,
+        "chat_template_kwargs": {
+            "enable_thinking": false
+        }
+    },
+    "tool": {
+        "timeout": 120,
+        "memory_limit_gb": 4,
+        "max_concurrency": 32,
+        "max_output_chars": 4096
+    },
+    "algorithm": {
+        "eps_clip": 0.2,
+        "eps_clip_high": 0.28,
+        "logprob_chunk_size": 1024,
+        "tool_call_bonus": false
+    },
+    "training": {
+        "rollout_batch_size": 2,
+        "micro_batch_size_per_gpu": 1,
+        "num_rollouts": 5,
+        "logging_steps": 1,
+        "save_steps": 1000000,
+        "save_dir": "./checkpoints/debug",
+        "seed": 42
+    },
+    "data": {
+        "path": "data/dapo-math-17k/dapo-math-17k.jsonl",
+        "prompt_key": "prompt",
+        "label_key": "label",
+        "shuffle": true
+    },
+    "deepspeed_config": "configs/ds_zero2.json"
+}
