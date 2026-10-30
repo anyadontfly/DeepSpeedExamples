@@ -3,9 +3,9 @@
 """Math prompts with reference answers, read from JSONL.
 
 Each line holds a prompt (a chat message list, or a string taken as the
-user message) and its label, as in miles' ``dapo-math-17k`` file. Rows
-keep their line number as ``index``, which the trainer uses as the GRPO
-group index.
+user message) and its label, as in miles' ``dapo-math-17k`` and
+``aime-2024`` files. Rows keep their line number as ``index``, which the
+trainer uses as the GRPO group index.
 """
 
 import json

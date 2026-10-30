@@ -25,9 +25,9 @@ from torch.utils.data.distributed import DistributedSampler
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from config import GRPOConfig
-from data import PromptDataset, collate_rows
+from data import PromptDataset, collate_rows, load_prompts
 from deepspeed.runtime.rollout import build_rollout
-from policy import PolicyModel
+from policy import PolicyModel, RolloutEngineView
 from tools import CodeInterpreter
 from trainer import GRPOTrainer
 
@@ -76,12 +76,12 @@ def main() -> None:
     policy = PolicyModel(model, chunk_size=cfg.algorithm.logprob_chunk_size)
 
     # Every step is one optimizer update over all of a rank's trajectories.
-    prompts_per_rank = cfg.training.rollout_batch_size // world_size
-    samples_per_rank = prompts_per_rank * cfg.rollout.n_samples_per_prompt
+    samples_per_rank = cfg.training.global_batch_size // world_size
+    prompts_per_rank = samples_per_rank // cfg.rollout.n_samples_per_prompt
     with open(cfg.deepspeed_config, "r") as f:
         ds_config = json.load(f)
-    ds_config["train_micro_batch_size_per_gpu"] = cfg.training.micro_batch_size_per_gpu
-    ds_config["gradient_accumulation_steps"] = samples_per_rank // cfg.training.micro_batch_size_per_gpu
+    ds_config["train_micro_batch_size_per_gpu"] = cfg.training.micro_batch_size // world_size
+    ds_config["gradient_accumulation_steps"] = cfg.training.global_batch_size // cfg.training.micro_batch_size
     ds_config.pop("train_batch_size", None)
     if not ds_config.get("hybrid_engine", {}).get("enabled", False):
         raise ValueError("This example rolls out with the hybrid engine; enable it in the DeepSpeed config")
@@ -93,7 +93,10 @@ def main() -> None:
                            memory_limit_gb=cfg.tool.memory_limit_gb,
                            max_concurrency=cfg.tool.max_concurrency,
                            max_output_chars=cfg.tool.max_output_chars)
-    rollout = build_rollout(cfg.rollout, generation_engine=engine, tokenizer=tokenizer, tools=[tool])
+    rollout = build_rollout(cfg.rollout,
+                            generation_engine=RolloutEngineView(engine),
+                            tokenizer=tokenizer,
+                            tools=[tool])
 
     # --- data: each rank rolls out its own share of every step's prompts ----
     dataset = PromptDataset(cfg.data.path, cfg.data.prompt_key, cfg.data.label_key)
@@ -103,6 +106,7 @@ def main() -> None:
                                  shuffle=cfg.data.shuffle,
                                  seed=cfg.training.seed)
     loader = DataLoader(dataset, batch_size=prompts_per_rank, sampler=sampler, collate_fn=collate_rows, drop_last=True)
+    eval_rows = load_prompts(cfg.eval.path, cfg.data.prompt_key, cfg.data.label_key) if cfg.eval.path else []
 
     GRPOTrainer(
         cfg=cfg,
@@ -110,6 +114,7 @@ def main() -> None:
         tokenizer=tokenizer,
         rollout=rollout,
         dataloader=loader,
+        eval_rows=eval_rows,
     ).train()
 
 

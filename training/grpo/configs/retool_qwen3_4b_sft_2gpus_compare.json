@@ -1,0 +1,57 @@
+{
+    "model": {
+        "model_name_or_path": "font-info/qwen3-4b-sft-SGLang-RL",
+        "dtype": "bfloat16",
+        "attn_implementation": "sdpa",
+        "gradient_checkpointing": true
+    },
+    "rollout": {
+        "engine": "hybrid_engine",
+        "use_graph_capture": false,
+        "multi_turn": true,
+        "max_turns": 16,
+        "max_context_len": null,
+        "max_new_tokens": 131072,
+        "max_new_tokens_per_turn": 8192,
+        "temperature": 1.0,
+        "n_samples_per_prompt": 8,
+        "enable_profiling": true
+    },
+    "tool": {
+        "timeout": 120,
+        "memory_limit_gb": 4,
+        "max_concurrency": 32,
+        "max_output_chars": 100000000
+    },
+    "algorithm": {
+        "eps_clip": 0.2,
+        "eps_clip_high": 0.28,
+        "logprob_chunk_size": 1024,
+        "tool_call_bonus": false,
+        "loss_aggregation": "sample_mean"
+    },
+    "training": {
+        "global_batch_size": 256,
+        "micro_batch_size": 2,
+        "num_rollouts": 100,
+        "logging_steps": 1,
+        "save_steps": 1000,
+        "save_dir": "./checkpoints/retool_qwen3_4b_sft_miles",
+        "seed": 1234
+    },
+    "data": {
+        "path": "data/dapo-math-17k/dapo-math-17k.jsonl",
+        "prompt_key": "prompt",
+        "label_key": "label",
+        "shuffle": true
+    },
+    "deepspeed_config": "configs/ds_zero2_2gpus_compare.json",
+    "eval": {
+        "path": "data/aime-2024/aime-2024.jsonl",
+        "interval": 20,
+        "n_samples_per_prompt": 16,
+        "max_new_tokens": 262144,
+        "max_new_tokens_per_turn": 16384,
+        "temperature": 1.0
+    }
+}

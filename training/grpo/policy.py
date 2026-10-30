@@ -8,6 +8,10 @@ under activation checkpointing and only each target token's log-prob is
 kept. Training goes through ``engine(...)`` rather than a
 submodule, because DeepSpeed hooks the engine's forward outputs to prepare
 ZeRO for the backward pass.
+
+Rollout instead drives the causal LM itself: ``generate``, CUDA graph capture
+and the forward profiler all call ``engine.module`` as a Hugging Face model, so
+the rollout gets a :class:`RolloutEngineView` whose ``module`` is that model.
 """
 
 import torch
@@ -21,15 +25,12 @@ def _chunk_log_probs(hidden, lm_head, targets, temperature):
 
 
 class PolicyModel(torch.nn.Module):
-    """Wraps a Hugging Face causal LM; ``generate`` is passed through for rollout."""
+    """Wraps a Hugging Face causal LM; its forward returns token log-probs for training."""
 
     def __init__(self, model, chunk_size: int = 1024):
         super().__init__()
         self.model = model
         self.chunk_size = chunk_size
-
-    def generate(self, *args, **kwargs):
-        return self.model.generate(*args, **kwargs)
 
     def forward(self, input_ids, attention_mask, temperature: float = 1.0):
         """Log-prob of each next token under ``softmax(logits / temperature)``.
@@ -56,3 +57,18 @@ class PolicyModel(torch.nn.Module):
                            temperature,
                            use_reentrant=False))
         return torch.cat(log_probs, dim=1)
+
+
+class RolloutEngineView:
+    """The DeepSpeed engine as the rollout sees it: ``module`` is the wrapped causal LM.
+
+    Everything else (the hybrid engine's ZeRO and shared-prefill methods) is the
+    engine's own, so rollout and training still share one set of weights.
+    """
+
+    def __init__(self, engine):
+        self._engine = engine
+        self.module = engine.module.model
+
+    def __getattr__(self, name):
+        return getattr(self._engine, name)

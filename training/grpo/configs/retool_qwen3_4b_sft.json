@@ -13,7 +13,6 @@
         "max_new_tokens": 8192,
         "temperature": 1.0,
         "n_samples_per_prompt": 2,
-        "generate_batch_size": 4,
         "enable_profiling": true
     },
     "tool": {
@@ -29,8 +28,8 @@
         "tool_call_bonus": false
     },
     "training": {
-        "rollout_batch_size": 2,
-        "micro_batch_size_per_gpu": 1,
+        "global_batch_size": 4,
+        "micro_batch_size": 2,
         "num_rollouts": 5,
         "logging_steps": 1,
         "save_steps": 100,

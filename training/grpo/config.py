@@ -31,10 +31,22 @@ class RolloutConfig(_BaseRolloutConfig):
     max_context_len: Optional[int] = 16384
     # Generated tokens per trajectory, summed over its turns.
     max_new_tokens: int = 8192
+    # Generated tokens per turn, on top of max_new_tokens; None caps turns only by what is left of it.
+    # miles' rollout_max_response_len is a per-turn cap.
+    max_new_tokens_per_turn: Optional[int] = None
     temperature: float = 1.0
     n_samples_per_prompt: int = 8
-    # Trajectories per generate call (whole prompts, at least one); bounds the KV cache of a rollout chunk.
-    generate_batch_size: int = 16
+    # Trajectories per generate call, in whole prompts and at least one; None rolls out a rank's share of the
+    # step in one call. Bounds the KV cache and prefill memory of a call.
+    generate_batch_size: Optional[int] = None
+    # Decode rows for continuous batching; None keeps static batching. Each turn of each trajectory takes a free
+    # row and releases it when the turn ends, and tools run beside decoding (needs a DeepSpeed build with
+    # multi-turn continuous batching, and max_context_len to size the rows).
+    continuous_batch_size: Optional[int] = None
+    # Read by HybridEngineRollout: decode steps between checks for finished turns under continuous batching.
+    continuous_poll_steps: int = 16
+    # Read by HybridEngineRollout: segment-KI kernel injection (needs a DeepSpeed build with PR #8602).
+    use_segki: bool = False
     # Read by HybridEngineRollout: time each generate call (see get_last_profile()).
     enable_profiling: bool = False
 
@@ -56,13 +68,20 @@ class AlgorithmConfig:
     logprob_chunk_size: int = 1024
     # miles' retool reward bonus for tool calls on wrong answers.
     tool_call_bonus: bool = False
+    # "token_mean": every generated token of the step weighs the same.
+    # "sample_mean": each trajectory's loss is averaged over its own tokens, then over trajectories,
+    # as miles does without --calculate-per-token-loss.
+    loss_aggregation: str = "token_mean"
 
 
 @dataclass
 class TrainingConfig:
-    # Prompts per step across all ranks; each step is one optimizer update.
-    rollout_batch_size: int = 32
-    micro_batch_size_per_gpu: int = 1
+    # Trajectories per step across all ranks, in whole prompts per rank: rolled out together, then
+    # one optimizer step over all of them.
+    global_batch_size: int = 256
+    # Trajectories per forward/backward pass across all ranks, split evenly between them; None means
+    # one pass per step, global_batch_size.
+    micro_batch_size: Optional[int] = None
     num_rollouts: int = 3000
     logging_steps: int = 1
     save_steps: int = 1000
@@ -79,6 +98,17 @@ class DataConfig:
 
 
 @dataclass
+class EvalConfig:
+    # Empty path disables evaluation.
+    path: str = ""
+    interval: int = 20
+    n_samples_per_prompt: int = 16
+    max_new_tokens: int = 16384
+    max_new_tokens_per_turn: Optional[int] = None
+    temperature: float = 1.0
+
+
+@dataclass
 class GRPOConfig:
     model: ModelConfig
     rollout: RolloutConfig = field(default_factory=RolloutConfig)
@@ -86,6 +116,7 @@ class GRPOConfig:
     algorithm: AlgorithmConfig = field(default_factory=AlgorithmConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
     data: DataConfig = field(default_factory=DataConfig)
+    eval: EvalConfig = field(default_factory=EvalConfig)
     deepspeed_config: str = ""
 
     @classmethod
@@ -99,6 +130,7 @@ class GRPOConfig:
             algorithm=AlgorithmConfig(**raw.get("algorithm", {})),
             training=TrainingConfig(**raw.get("training", {})),
             data=DataConfig(**raw.get("data", {})),
+            eval=EvalConfig(**raw.get("eval", {})),
             deepspeed_config=raw.get("deepspeed_config", ""),
         )
 
@@ -112,10 +144,24 @@ class GRPOConfig:
             raise ValueError("GRPO needs at least 2 samples per prompt to compare them")
         if self.rollout.temperature <= 0:
             raise ValueError("GRPO samples with temperature > 0")
-        if self.training.rollout_batch_size % world_size:
-            raise ValueError(f"rollout_batch_size {self.training.rollout_batch_size} is not divisible by the "
+        if self.rollout.generate_batch_size is not None and self.rollout.generate_batch_size < 1:
+            raise ValueError("rollout.generate_batch_size must be positive")
+        if self.rollout.continuous_batch_size is not None and self.rollout.continuous_batch_size < 1:
+            raise ValueError("rollout.continuous_batch_size must be positive")
+        if self.algorithm.loss_aggregation not in ("token_mean", "sample_mean"):
+            raise ValueError(f"Unknown loss_aggregation {self.algorithm.loss_aggregation!r}; "
+                             "expected 'token_mean' or 'sample_mean'")
+        # Each rank rolls out whole prompts, every one with all of its samples.
+        trajectories_per_prompt_round = world_size * self.rollout.n_samples_per_prompt
+        if self.training.global_batch_size < 1 or self.training.global_batch_size % trajectories_per_prompt_round:
+            raise ValueError(f"global_batch_size {self.training.global_batch_size} must be a multiple of world size "
+                             f"x n_samples_per_prompt = {trajectories_per_prompt_round}")
+        if self.training.micro_batch_size is None:
+            self.training.micro_batch_size = self.training.global_batch_size
+        micro_batch_size = self.training.micro_batch_size
+        if micro_batch_size < 1 or micro_batch_size % world_size:
+            raise ValueError(f"micro_batch_size {micro_batch_size} must split into whole trajectories across the "
                              f"world size {world_size}")
-        samples_per_rank = self.training.rollout_batch_size // world_size * self.rollout.n_samples_per_prompt
-        if samples_per_rank % self.training.micro_batch_size_per_gpu:
-            raise ValueError(f"{samples_per_rank} samples per rank do not split into micro-batches of "
-                             f"{self.training.micro_batch_size_per_gpu}")
+        if self.training.global_batch_size % micro_batch_size:
+            raise ValueError(f"global_batch_size {self.training.global_batch_size} does not split into "
+                             f"micro-batches of {micro_batch_size}")

@@ -13,7 +13,6 @@
         "max_new_tokens": 4096,
         "temperature": 1.0,
         "n_samples_per_prompt": 4,
-        "generate_batch_size": 8,
         "enable_profiling": true,
         "chat_template_kwargs": {
             "enable_thinking": false
@@ -32,8 +31,8 @@
         "tool_call_bonus": false
     },
     "training": {
-        "rollout_batch_size": 2,
-        "micro_batch_size_per_gpu": 1,
+        "global_batch_size": 8,
+        "micro_batch_size": 1,
         "num_rollouts": 5,
         "logging_steps": 1,
         "save_steps": 1000000,

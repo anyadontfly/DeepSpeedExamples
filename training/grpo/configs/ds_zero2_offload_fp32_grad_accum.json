@@ -1,0 +1,34 @@
+{
+    "bf16": {
+        "enabled": true
+    },
+    "data_types": {
+        "grad_accum_dtype": "fp32"
+    },
+    "zero_optimization": {
+        "stage": 2,
+        "offload_optimizer": {
+            "device": "cpu",
+            "pin_memory": true
+        },
+        "overlap_comm": true,
+        "contiguous_gradients": true,
+        "reduce_bucket_size": 2e8,
+        "allgather_bucket_size": 2e8
+    },
+    "optimizer": {
+        "type": "AdamW",
+        "params": {
+            "lr": 1e-6,
+            "betas": [0.9, 0.98],
+            "eps": 1e-8,
+            "weight_decay": 0.1
+        }
+    },
+    "gradient_clipping": 1.0,
+    "hybrid_engine": {
+        "enabled": true
+    },
+    "steps_per_print": 1000000,
+    "wall_clock_breakdown": false
+}

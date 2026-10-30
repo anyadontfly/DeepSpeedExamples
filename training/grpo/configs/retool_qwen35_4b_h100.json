@@ -1,0 +1,63 @@
+{
+    "model": {
+        "model_name_or_path": "Qwen/Qwen3.5-4B",
+        "dtype": "bfloat16",
+        "attn_implementation": "sdpa",
+        "gradient_checkpointing": true
+    },
+    "rollout": {
+        "engine": "hybrid_engine",
+        "multi_turn": true,
+        "max_turns": 16,
+        "max_context_len": 24576,
+        "max_new_tokens": 131072,
+        "max_new_tokens_per_turn": 8192,
+        "temperature": 1.0,
+        "n_samples_per_prompt": 8,
+        "generate_batch_size": 32,
+        "chat_template_kwargs": {
+            "enable_thinking": false
+        },
+        "tool_call_parser": "qwen3_coder",
+        "use_graph_capture": true,
+        "use_segki": true,
+        "enable_profiling": true
+    },
+    "tool": {
+        "timeout": 1,
+        "memory_limit_gb": 4,
+        "max_concurrency": 32,
+        "max_output_chars": 4096
+    },
+    "algorithm": {
+        "eps_clip": 0.2,
+        "eps_clip_high": 0.28,
+        "logprob_chunk_size": 1024,
+        "tool_call_bonus": true,
+        "loss_aggregation": "sample_mean"
+    },
+    "training": {
+        "global_batch_size": 256,
+        "micro_batch_size": 1,
+        "num_rollouts": 500,
+        "logging_steps": 1,
+        "save_steps": 50,
+        "save_dir": "./checkpoints/retool_qwen35_4b_h100",
+        "seed": 42
+    },
+    "data": {
+        "path": "data/dapo-math-17k/dapo-math-17k.jsonl",
+        "prompt_key": "prompt",
+        "label_key": "label",
+        "shuffle": true
+    },
+    "eval": {
+        "path": "data/aime-2024/aime-2024.jsonl",
+        "interval": 20,
+        "n_samples_per_prompt": 16,
+        "max_new_tokens": 262144,
+        "max_new_tokens_per_turn": 16384,
+        "temperature": 1.0
+    },
+    "deepspeed_config": "configs/ds_zero2_offload.json"
+}
