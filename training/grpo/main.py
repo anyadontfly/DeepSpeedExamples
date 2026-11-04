@@ -27,6 +27,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from config import GRPOConfig
 from data import PromptDataset, collate_rows, load_prompts
 from deepspeed.runtime.rollout import build_rollout
+from metrics import MetricsLogger, SpanLog
 from policy import PolicyModel, RolloutEngineView
 from tools import CodeInterpreter
 from trainer import GRPOTrainer
@@ -88,11 +89,20 @@ def main() -> None:
 
     engine, *_ = deepspeed.initialize(model=policy, model_parameters=policy.parameters(), config=ds_config)
 
+    # --- metrics: per-step records on rank 0, spans on every rank ----------
+    rank_zero = dist.get_rank() == 0
+    metrics_logger = MetricsLogger(cfg.training.metrics_dir if rank_zero else "",
+                                   cfg.training.wandb_project if rank_zero else "",
+                                   cfg.training.wandb_run_name,
+                                   config=cfg.to_dict())
+    span_log = SpanLog(cfg.training.metrics_dir)
+
     # --- rollout engine with the code interpreter --------------------------
     tool = CodeInterpreter(timeout=cfg.tool.timeout,
                            memory_limit_gb=cfg.tool.memory_limit_gb,
                            max_concurrency=cfg.tool.max_concurrency,
-                           max_output_chars=cfg.tool.max_output_chars)
+                           max_output_chars=cfg.tool.max_output_chars,
+                           span_log=span_log)
     rollout = build_rollout(cfg.rollout,
                             generation_engine=RolloutEngineView(engine),
                             tokenizer=tokenizer,
@@ -108,14 +118,20 @@ def main() -> None:
     loader = DataLoader(dataset, batch_size=prompts_per_rank, sampler=sampler, collate_fn=collate_rows, drop_last=True)
     eval_rows = load_prompts(cfg.eval.path, cfg.data.prompt_key, cfg.data.label_key) if cfg.eval.path else []
 
-    GRPOTrainer(
+    trainer = GRPOTrainer(
         cfg=cfg,
         engine=engine,
         tokenizer=tokenizer,
         rollout=rollout,
         dataloader=loader,
         eval_rows=eval_rows,
-    ).train()
+        metrics_logger=metrics_logger,
+        span_log=span_log,
+    )
+    if cfg.training.resume_from:
+        trainer.resume(cfg.training.resume_from)
+    trainer.train()
+    metrics_logger.close()
 
 
 if __name__ == "__main__":

@@ -20,12 +20,16 @@ loss reduces to the policy gradient.
 """
 
 import os
+import re
 import time
 
+import psutil
 import torch
+import torch.distributed as torch_dist
 from deepspeed import comm as dist
 from deepspeed.accelerator import get_accelerator
 
+import metrics as M
 from config import GRPOConfig
 from reward import retool_reward
 from deepspeed.runtime.rollout import RolloutEngine, RolloutRequest, SamplingConfig
@@ -43,6 +47,21 @@ def _mean_across_ranks(values: dict) -> dict:
     dist.all_reduce(tensor)
     tensor /= dist.get_world_size()
     return dict(zip(names, tensor.tolist()))
+
+
+def _sum_across_ranks(values: dict) -> dict:
+    """Sum each metric over ranks with one all-reduce."""
+    names = sorted(values)
+    tensor = torch.tensor([float(values[name]) for name in names], device=get_accelerator().current_device_name())
+    dist.all_reduce(tensor)
+    return dict(zip(names, tensor.tolist()))
+
+
+def _gather_lists(items: list) -> list:
+    """Every rank's ``items`` concatenated, on every rank."""
+    gathered = [None] * dist.get_world_size()
+    torch_dist.all_gather_object(gathered, items)
+    return [item for rank_items in gathered for item in rank_items]
 
 
 def group_advantages(samples, rewards):
@@ -71,6 +90,8 @@ class GRPOTrainer:
         rollout: RolloutEngine,
         dataloader,
         eval_rows=None,
+        metrics_logger=None,
+        span_log=None,
     ):
         self.cfg = cfg
         self.engine = engine
@@ -78,6 +99,8 @@ class GRPOTrainer:
         self.rollout = rollout
         self.dataloader = dataloader
         self.eval_rows = eval_rows or []
+        self.metrics_logger = metrics_logger or M.MetricsLogger()
+        self.span_log = span_log or M.SpanLog()
 
         self.device = get_accelerator().current_device_name()
         self.pad_token_id = tokenizer.pad_token_id
@@ -101,25 +124,43 @@ class GRPOTrainer:
     # Driver
     # ------------------------------------------------------------------
 
+    def resume(self, checkpoint_dir: str) -> None:
+        """Load the latest checkpoint in ``checkpoint_dir``: weights, optimizer state and the step it was saved at."""
+        load_path, _ = self.engine.load_checkpoint(checkpoint_dir)
+        if load_path is None:
+            raise FileNotFoundError(f"No checkpoint to resume from in {checkpoint_dir}")
+        # load_path is a file inside the checkpoint's tag directory, and tags are step_<N> (see _save).
+        tag = re.search(r"(?:^|/)step_(\d+)(?:/|$)", load_path)
+        if tag is None:
+            raise ValueError(f"Cannot read the step from checkpoint path {load_path}")
+        self.step = int(tag.group(1))
+        if _is_rank_zero():
+            print(f"[grpo] resumed from {load_path} at step {self.step}", flush=True)
+
     def train(self) -> None:
-        epoch = 0
+        # A resumed run picks up the data order where its checkpoint left off.
+        epoch, skip = divmod(self.step, len(self.dataloader))
         while self.step < self.cfg.training.num_rollouts:
             # Reseed the DistributedSampler so each epoch reshuffles each rank's shard.
             self.dataloader.sampler.set_epoch(epoch)
             for rows in self.dataloader:
+                if skip:
+                    skip -= 1
+                    continue
                 if self.step >= self.cfg.training.num_rollouts:
                     break
                 if self._eval_due():
-                    self._log(self.evaluate(), prefix="eval")
+                    self._log(self.evaluate(), prefix="eval", step_key="eval/step")
                 metrics = self._train_step(rows)
                 self.step += 1
                 if self.step % self.cfg.training.logging_steps == 0:
-                    self._log(metrics, prefix="train")
+                    # Rollout and train metrics are numbered by the step that produced them, from 0, as in miles.
+                    self._log(metrics, prefix="train", step_key="rollout/step", step=self.step - 1)
                 if self.step % self.cfg.training.save_steps == 0:
                     self._save()
             epoch += 1
-        if self.cfg.eval.path:
-            self._log(self.evaluate(), prefix="eval")
+        if self.cfg.eval.path and self.cfg.eval.at_end:
+            self._log(self.evaluate(), prefix="eval", step_key="eval/step")
         if self.step % self.cfg.training.save_steps:
             self._save()
 
@@ -131,10 +172,16 @@ class GRPOTrainer:
     # Rollout and reward
     # ------------------------------------------------------------------
 
-    def _rollout(self, rows, sampling: SamplingConfig) -> list:
-        """Generate trajectories for ``rows`` in chunks, the hybrid engine in inference mode."""
+    def _rollout(self, rows, sampling: SamplingConfig, evaluation: bool = False) -> tuple:
+        """Generate trajectories for ``rows`` in chunks, the hybrid engine in inference mode.
+
+        Returns the trajectories and each generate call's profile (empty without ``rollout.enable_profiling``).
+        """
         self.engine.eval()
+        # Tool-call spans written during this rollout belong to this step and phase.
+        self.span_log.context = {"step": self.step, "eval": evaluation}
         samples = []
+        profiles = []
         # A call decodes rollout.generate_batch_size trajectories, by default as many as a training step does
         # on this rank, so a step's rows roll out in one call. Evaluation's larger n gets fewer prompts per call.
         trajectories_per_call = self.cfg.rollout.generate_batch_size
@@ -152,7 +199,16 @@ class GRPOTrainer:
                 # Scalars only: the continuous-batching poll trace is a long list.
                 timings = {name: value for name, value in profile.items() if isinstance(value, (int, float))}
                 self._log({"chunk": chunk, **timings}, prefix="rollout")
-        return samples
+                self.span_log.write({"ev": "generate_call", "chunk": chunk, **timings})
+                profiles.append(timings)
+        return samples, profiles
+
+    def _summaries(self, samples, rewards) -> list:
+        """Every rank's per-trajectory summaries (see metrics.sample_summary); also written as sample spans."""
+        summaries = [M.sample_summary(sample, reward) for sample, reward in zip(samples, rewards)]
+        for summary in summaries:
+            self.span_log.write({"ev": "sample", **{k: v for k, v in summary.items() if k != "group_index"}})
+        return _gather_lists(summaries)
 
     def _score(self, samples, rows) -> list:
         """Each sample's reward, also stored on the sample."""
@@ -172,33 +228,86 @@ class GRPOTrainer:
         rank, world_size = dist.get_rank(), dist.get_world_size()
         rows = self.eval_rows[rank::world_size]
         start = time.time()
-        rewards = self._score(self._rollout(rows, self.eval_sampling), rows)
+        samples, _ = self._rollout(rows, self.eval_sampling, evaluation=True)
+        rewards = self._score(samples, rows)
         # A correct answer scores +1; any wrong one, even with the tool bonus, stays below 0.
         num_correct = sum(reward > 0 for reward in rewards)
         totals = torch.tensor([num_correct, len(rewards)], dtype=torch.float, device=self.device)
         dist.all_reduce(totals)
-        return {"accuracy": (totals[0] / totals[1].clamp(min=1)).item(), "eval_s": time.time() - start}
+        metrics = M.eval_metrics(self._summaries(samples, rewards), self.cfg.eval.name)
+        return {
+            "eval/accuracy": (totals[0] / totals[1].clamp(min=1)).item(),
+            "eval/duration_seconds": time.time() - start,
+            **metrics,
+        }
 
     # ------------------------------------------------------------------
     # One step
     # ------------------------------------------------------------------
 
     def _train_step(self, rows) -> dict:
-        samples = self._rollout(rows, self.sampling)
+        accelerator = get_accelerator()
+        accelerator.reset_peak_memory_stats()
+        step_start = time.time()
+        samples, profiles = self._rollout(rows, self.sampling)
+        rollout_time = time.time() - step_start
         rewards = self._score(samples, rows)
         advantages = group_advantages(samples, rewards)
 
         # Rollout and training take turns on the GPU: return each phase's cached memory before the other runs.
-        get_accelerator().empty_cache()
+        accelerator.empty_cache()
         self.engine.train()
-        loss = self._update(samples, advantages)
-        get_accelerator().empty_cache()
-        return _mean_across_ranks({"loss": loss, "reward": sum(rewards) / len(rewards)})
+        train_start = time.time()
+        loss, update = self._update(samples, advantages)
+        train_time = time.time() - train_start
+        accelerator.empty_cache()
 
-    def _update(self, samples, advantages) -> float:
+        metrics = _mean_across_ranks({"loss": loss, "reward": sum(rewards) / len(rewards)})
+        metrics.update(self._step_metrics(samples, rewards, profiles, {**update, "loss": loss}, rollout_time, train_time))
+        metrics["perf/step_time"] = time.time() - step_start
+        return metrics
+
+    def _step_metrics(self, samples, rewards, profiles, update, rollout_time, train_time) -> dict:
+        """The step's rollout, train and perf metrics under miles' names, over all ranks."""
+        world_size = dist.get_world_size()
+        metrics = M.rollout_metrics(self._summaries(samples, rewards), self.cfg.rollout.max_new_tokens_per_turn)
+        totals = _sum_across_ranks(update)
+        grad_norm = self.engine.get_global_grad_norm()
+        metrics.update({
+            # Summed over ranks, the per-rank loss shares are the step loss; there is no KL or entropy term.
+            "train/loss": totals["loss"],
+            "train/pg_loss": totals["loss"],
+            "train/pg_clipfrac": totals["clipped_tokens"] / max(totals["loss_tokens"], 1),
+            "train/ppo_kl": totals["log_ratio_sum"] / max(totals["loss_tokens"], 1),
+            "train/grad_norm": float(grad_norm) if grad_norm is not None else float("nan"),
+            "train/lr": self.engine.get_lr()[0],
+        })
+        # Every rank rolls out and trains at once: times are averaged over ranks and throughput sums them.
+        times = _mean_across_ranks({"rollout": rollout_time, "train": train_time})
+        effective = metrics["rollout/response_len/mean"] * metrics["rollout/num_training_samples"]
+        raw = metrics["multi_turn/raw_response_length/response_length_mean"] * metrics["rollout/num_training_samples"]
+        metrics.update({
+            "perf/rollout_time": times["rollout"],
+            "perf/tokens_per_gpu_per_sec": raw / times["rollout"] / world_size,
+            "perf/effective_tokens_per_gpu_per_sec": effective / times["rollout"] / world_size,
+            "perf/longest_sample_tokens_per_sec":
+            metrics["multi_turn/raw_response_length/response_length_max"] / times["rollout"],
+            # The hybrid engine has no separate log-prob or reference passes: the update is all of training.
+            "perf/actor_train_time": times["train"],
+            "perf/train_time": times["train"],
+            "perf/actor_train_tok_per_s": totals["train_tokens"] / times["train"],
+            "perf/gpu_max_memory_allocated_gb": get_accelerator().max_memory_allocated() / 1024**3,
+            "perf/process_rss_gb": psutil.Process().memory_info().rss / 1024**3,
+            **M.host_memory_gb(),
+        })
+        metrics.update(M.sum_profiles(profiles))
+        return metrics
+
+    def _update(self, samples, advantages) -> tuple:
         """One optimizer step over ``samples``: PPO-clip, averaged over all ranks.
 
-        Returns this rank's share of the step loss; summed over ranks it is the step loss.
+        Returns this rank's share of the step loss (summed over ranks it is the step loss) and this rank's
+        counts for the train metrics: loss tokens, clipped tokens, the summed log-ratio and trained tokens.
         """
         sample_mean = self.cfg.algorithm.loss_aggregation == "sample_mean"
         if sample_mean:
@@ -214,6 +323,7 @@ class GRPOTrainer:
 
         eps_low, eps_high = self.cfg.algorithm.eps_clip, self.cfg.algorithm.eps_clip_high
         step_loss = 0.0
+        update = {"loss_tokens": 0.0, "clipped_tokens": 0.0, "log_ratio_sum": 0.0, "train_tokens": 0.0}
         # micro_batch_size counts trajectories across ranks.
         micro_batch_size = self.cfg.training.micro_batch_size // dist.get_world_size()
         for start in range(0, len(samples), micro_batch_size):
@@ -228,6 +338,12 @@ class GRPOTrainer:
             unclipped = -advantage * ratio
             clipped = -advantage * ratio.clamp(1 - eps_low, 1 + eps_high)
             token_loss = torch.maximum(unclipped, clipped) * mask
+            with torch.no_grad():
+                # miles' pg_clipfrac and ppo_kl; with one update per rollout the ratio is 1 and both are 0.
+                update["loss_tokens"] += mask.sum().item()
+                update["clipped_tokens"] += ((clipped > unclipped).float() * mask).sum().item()
+                update["log_ratio_sum"] += (-ratio.detach().log() * mask).sum().item()
+                update["train_tokens"] += batch["attention_mask"].sum().item()
             if sample_mean:
                 # A trajectory cut before its first turn has no tokens and adds nothing.
                 token_loss = token_loss.sum(dim=1) / mask.sum(dim=1).clamp(min=1)
@@ -237,7 +353,7 @@ class GRPOTrainer:
             self.engine.backward(loss, scale_wrt_gas=False)
             self.engine.step()
             step_loss += loss.item()
-        return step_loss
+        return step_loss, update
 
     def _collate(self, samples, advantages) -> dict:
         """Right-pad samples into training tensors aligned with the next-token log-probs.
@@ -273,11 +389,14 @@ class GRPOTrainer:
     # Logging / checkpointing
     # ------------------------------------------------------------------
 
-    def _log(self, metrics: dict, prefix: str) -> None:
+    def _log(self, metrics: dict, prefix: str, step_key: str = None, step: int = None) -> None:
+        """Print ``metrics``; with ``step_key``, also record them (metrics.jsonl, wandb) at ``step``."""
         if not _is_rank_zero():
             return
         values = " ".join(f"{name}={value:.4g}" for name, value in sorted(metrics.items()))
         print(f"[grpo][{prefix}][step {self.step}] {values}", flush=True)
+        if step_key is not None:
+            self.metrics_logger.log(metrics, step_key, self.step if step is None else step)
 
     def _save(self) -> None:
         """Save a resumable DeepSpeed checkpoint and a Hugging Face copy of the weights."""

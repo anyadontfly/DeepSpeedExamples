@@ -86,7 +86,16 @@ class TrainingConfig:
     logging_steps: int = 1
     save_steps: int = 1000
     save_dir: str = "./grpo_ckpt"
+    # Continue from the latest checkpoint in this directory (weights, optimizer state, step count and data
+    # position); empty starts from the model. It may differ from save_dir.
+    resume_from: str = ""
     seed: int = 42
+    # Per-step metrics as metrics.jsonl, and per-sample, per-generate-call and per-tool-call spans, in this
+    # directory; empty disables both.
+    metrics_dir: str = ""
+    # Also logs the metrics to this wandb project when WANDB_API_KEY is set; empty disables wandb.
+    wandb_project: str = ""
+    wandb_run_name: str = ""
 
 
 @dataclass
@@ -101,7 +110,11 @@ class DataConfig:
 class EvalConfig:
     # Empty path disables evaluation.
     path: str = ""
+    # Metric names are eval/<name>, as in miles.
+    name: str = "aime"
     interval: int = 20
+    # Evaluate once more after the last step.
+    at_end: bool = True
     n_samples_per_prompt: int = 16
     max_new_tokens: int = 16384
     max_new_tokens_per_turn: Optional[int] = None

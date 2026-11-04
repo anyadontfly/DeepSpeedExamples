@@ -14,6 +14,7 @@ import os
 import re
 import sys
 import tempfile
+import time
 
 from deepspeed.runtime.rollout import Tool
 
@@ -133,11 +134,14 @@ class CodeInterpreter(Tool):
                  timeout: float = 120.0,
                  memory_limit_gb: int = 4,
                  max_concurrency: int = 32,
-                 max_output_chars: int = 4096):
+                 max_output_chars: int = 4096,
+                 span_log=None):
         self.timeout = timeout
         self.memory_limit = memory_limit_gb * 1024**3
         self.max_concurrency = max_concurrency
         self.max_output_chars = max_output_chars
+        # metrics.SpanLog: one record per call, as miles' retool_perf_hooks.execute_tool writes.
+        self.span_log = span_log
         self._loop = None
         self._semaphore = None
 
@@ -151,20 +155,41 @@ class CodeInterpreter(Tool):
         return self._semaphore
 
     async def execute(self, arguments) -> str:
+        start = time.time()
         code = arguments.get("code", "")
         if isinstance(code, list):
             code = "\n".join(str(line) for line in code)
+        output = await self._execute(code)
+        if self.span_log is not None:
+            end = time.time()
+            code_text = code if isinstance(code, str) else str(code)
+            self.span_log.write({
+                "ev": "tool",
+                "t0": start,
+                "t1": end,
+                "name": self.name,
+                "code_chars": len(code_text),
+                "result_chars": len(output),
+                "error": output.startswith("Error"),
+                # Slow calls keep their code, as in miles' perf log.
+                **({
+                    "code": code_text,
+                    "result": output[:500]
+                } if end - start > 0.5 else {}),
+            })
+        if len(output) > self.max_output_chars:
+            output = output[:self.max_output_chars] + "\n... (output truncated)"
+        return output
+
+    async def _execute(self, code) -> str:
+        """The sandbox's output for ``code``, before truncation."""
         if not isinstance(code, str) or not code.strip():
             return "Error: No code provided"
         error = check_code_safety(code)
         if error is not None:
             return f"Error: {error}"
-
         async with self._limiter():
-            output = await self._run(code)
-        if len(output) > self.max_output_chars:
-            output = output[:self.max_output_chars] + "\n... (output truncated)"
-        return output
+            return await self._run(code)
 
     async def _run(self, code: str) -> str:
         indented = "\n".join("    " + line for line in code.split("\n"))
