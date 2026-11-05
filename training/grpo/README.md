@@ -44,6 +44,8 @@ cd training/grpo
 bash scripts/prepare_data.sh
 ```
 
+The script also wraps each AIME prompt in the instructions every `dapo-math-17k` prompt has. The downloaded problems don't ask for a `\boxed{}` answer, which is the only form the scorer accepts, so without them nearly every sample scores −1. If you downloaded `aime-2024` before this step existed, run the script again.
+
 ## Run
 
 ```bash
