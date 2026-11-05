@@ -1,5 +1,7 @@
 huggingface_hub
 numpy
+psutil
 transformers>=5.0.0
+wandb
 # DeepSpeed must be installed from master: the example uses the multi-turn
 # deepspeed.runtime.rollout, which is unreleased. See README "Install".
