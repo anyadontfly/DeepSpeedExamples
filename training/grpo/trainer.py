@@ -110,14 +110,12 @@ class GRPOTrainer:
             max_new_tokens_per_turn=cfg.rollout.max_new_tokens_per_turn,
             temperature=cfg.rollout.temperature,
             n_samples_per_prompt=cfg.rollout.n_samples_per_prompt,
-            continuous_batch_size=cfg.rollout.continuous_batch_size,
         )
         self.eval_sampling = SamplingConfig(
             max_new_tokens=cfg.eval.max_new_tokens,
             max_new_tokens_per_turn=cfg.eval.max_new_tokens_per_turn,
             temperature=cfg.eval.temperature,
             n_samples_per_prompt=cfg.eval.n_samples_per_prompt,
-            continuous_batch_size=cfg.rollout.continuous_batch_size,
         )
 
     # ------------------------------------------------------------------

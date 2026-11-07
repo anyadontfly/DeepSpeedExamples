@@ -38,10 +38,6 @@ class RolloutConfig(_BaseRolloutConfig):
     # Trajectories per generate call, in whole prompts and at least one; None rolls out a rank's share of the
     # step in one call. Bounds the KV cache and prefill memory of a call.
     generate_batch_size: Optional[int] = None
-    # Decode rows for continuous batching; None keeps static batching. Each turn of each trajectory takes a free
-    # row and releases it when the turn ends, and tools run beside decoding (needs a DeepSpeed build with
-    # multi-turn continuous batching, and max_context_len to size the rows).
-    continuous_batch_size: Optional[int] = None
     # Read by HybridEngineRollout: decode steps between checks for finished turns under continuous batching.
     continuous_poll_steps: int = 16
     # Read by HybridEngineRollout: segment-KI kernel injection (needs a DeepSpeed build with PR #8602).
@@ -157,8 +153,6 @@ class GRPOConfig:
             raise ValueError("GRPO samples with temperature > 0")
         if self.rollout.generate_batch_size is not None and self.rollout.generate_batch_size < 1:
             raise ValueError("rollout.generate_batch_size must be positive")
-        if self.rollout.continuous_batch_size is not None and self.rollout.continuous_batch_size < 1:
-            raise ValueError("rollout.continuous_batch_size must be positive")
         if self.algorithm.loss_aggregation not in ("token_mean", "sample_mean"):
             raise ValueError(f"Unknown loss_aggregation {self.algorithm.loss_aggregation!r}; "
                              "expected 'token_mean' or 'sample_mean'")
