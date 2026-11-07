@@ -2,9 +2,8 @@
 # DeepSpeed Team
 """Retool reward: DAPO strict-box answer check.
 
-The answer check is a reduced port of ``math_dapo_utils.py`` in miles
-(https://github.com/radixark/miles), itself adapted from verl and
-EleutherAI's lm-evaluation-harness under the Apache License 2.0:
+The answer check is adapted from verl and EleutherAI's
+lm-evaluation-harness under the Apache License 2.0:
 Copyright 2024 Bytedance Ltd. and/or its affiliates, Copyright 2022
 EleutherAI and the HuggingFace Inc. team.
 """
@@ -45,7 +44,7 @@ def compute_score(solution: str, label: str) -> dict:
 
 
 def retool_reward(solution: str, label: str, num_tool_calls: int, tool_call_bonus: bool = False) -> dict:
-    """miles' retool reward: the strict-box score, plus an optional tool bonus.
+    """Retool reward: the strict-box score, plus an optional tool bonus.
 
     The bonus lifts a wrong answer by 0.05 per tool call, up to -0.6, so it
     never reaches a correct one.

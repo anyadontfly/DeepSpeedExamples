@@ -36,7 +36,7 @@
         "num_rollouts": 100,
         "logging_steps": 1,
         "save_steps": 1000,
-        "save_dir": "./checkpoints/retool_qwen3_4b_sft_miles",
+        "save_dir": "./checkpoints/retool_qwen3_4b_sft_2gpus_compare",
         "seed": 1234
     },
     "data": {

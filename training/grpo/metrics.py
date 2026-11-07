@@ -1,14 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 # DeepSpeed Team
-"""Rollout quality and performance metrics, named and defined as miles logs them.
-
-The names follow miles' (``rollout/*``, ``passrate/*``, ``multi_turn/*``, ``perf/*``, ``train/*``,
-``eval/*``) so a run of this example and a miles retool_v2 run can be plotted side by side. Where a
-definition is miles', the function says so; the formulas are copied, not approximated.
+"""Rollout quality and performance metrics: ``rollout/*``, ``passrate/*``, ``multi_turn/*``, ``perf/*``, ``train/*``
+and ``eval/*``.
 
 ``MetricsLogger`` writes each record to ``metrics.jsonl`` and, when a project is given and
 ``WANDB_API_KEY`` is set, to wandb. ``SpanLog`` writes per-sample, per-generate-call and per-tool-call
-records to ``spans.<pid>.jsonl``, in the format of miles' ``retool_perf_hooks`` (``--perf-log-dir``).
+records to ``spans.<pid>.jsonl``.
 """
 
 import json
@@ -20,7 +17,7 @@ from collections import defaultdict
 
 import numpy as np
 
-# miles.utils.metric_utils: a response repeats itself if a 10K-character window compresses more than 10x.
+# A response repeats itself if a 10K-character window compresses more than 10x.
 REPETITION_WINDOW_SIZE_CHARS = 10_000
 REPETITION_WINDOW_STRIDE_CHARS = 5_000
 REPETITION_MAX_WINDOWS = 32
@@ -28,7 +25,7 @@ REPETITION_COMPRESSION_RATIO_THRESHOLD = 10.0
 
 
 def has_repetition(text: str) -> bool:
-    """miles' has_repetition: whether any overlapping window of ``text`` is highly compressible."""
+    """Whether any overlapping window of ``text`` is highly compressible."""
     if len(text) < REPETITION_WINDOW_SIZE_CHARS:
         return False
     final_start = len(text) - REPETITION_WINDOW_SIZE_CHARS
@@ -44,7 +41,7 @@ def has_repetition(text: str) -> bool:
 
 
 def statistics(values) -> dict:
-    """miles' compute_statistics."""
+    """Mean, median, max and min of ``values``."""
     values = np.array(values, dtype=float)
     return {
         "mean": values.mean().item(),
@@ -55,7 +52,7 @@ def statistics(values) -> dict:
 
 
 def pass_at_k(rewards_by_group: list[list[float]]) -> dict:
-    """miles' compute_pass_rate: unbiased pass@k for k = 1, 2, 4, ... up to the group size; correct means reward 1."""
+    """Unbiased pass@k for k = 1, 2, 4, ... up to the group size; correct means reward 1."""
     group_size = len(rewards_by_group[0])
     if group_size < 2:
         return {}
@@ -69,7 +66,7 @@ def pass_at_k(rewards_by_group: list[list[float]]) -> dict:
 
 
 def zero_std(rewards_by_group: list[list[float]]) -> dict:
-    """miles' zero-std metrics: groups whose samples all got the same reward give GRPO no signal."""
+    """Zero-std metrics: groups whose samples all got the same reward give GRPO no signal."""
     uniform = [rewards[0] for rewards in rewards_by_group if all(reward == rewards[0] for reward in rewards)]
     counts = defaultdict(int)
     for reward in uniform:
@@ -87,9 +84,9 @@ def sample_summary(sample, reward: float) -> dict:
         "group_index": sample.group_index,
         "reward": float(reward),
         "status": sample.status.value,
-        # Tokens after the prompt, tool output included (miles' raw_response_length).
+        # Tokens after the prompt, tool output included (the raw response length).
         "response_length": sample.response_length,
-        # Tokens the model generated, tool output excluded (miles' effective_response_length).
+        # Tokens the model generated, tool output excluded (the effective response length).
         "effective_response_length": effective,
         "total_length": sum(sample.attention_mask) if sample.attention_mask else len(sample.tokens),
         "num_tool_calls": sample.response.count("<tool_call>"),
@@ -98,7 +95,7 @@ def sample_summary(sample, reward: float) -> dict:
 
 
 def rollout_metrics(summaries: list[dict], max_response_len_per_turn) -> dict:
-    """miles' rollout/*, passrate/* and multi_turn/* metrics of one step's trajectories (all ranks)."""
+    """The rollout/*, passrate/* and multi_turn/* metrics of one step's trajectories (all ranks)."""
     groups = defaultdict(list)
     for summary in summaries:
         groups[summary["group_index"]].append(summary["reward"])
@@ -122,14 +119,14 @@ def rollout_metrics(summaries: list[dict], max_response_len_per_turn) -> dict:
         metrics[f"multi_turn/raw_response_length/response_length_{k}"] = raw_stats[k]
         metrics[f"multi_turn/wo_obs_response_length/response_length_{k}"] = effective_stats[k]
     if max_response_len_per_turn:
-        # miles compares the whole trajectory's length with its per-turn cap here.
+        # Compares the whole trajectory's length with the per-turn cap.
         metrics["multi_turn/raw_response_length/response_length_clip_ratio"] = float(
             np.mean([length >= max_response_len_per_turn for length in raw]))
     return metrics
 
 
 def eval_metrics(summaries: list[dict], name: str) -> dict:
-    """miles' eval/<name>* metrics: mean reward, truncation and response lengths over every eval sample."""
+    """The eval/<name>* metrics: mean reward, truncation and response lengths over every eval sample."""
     metrics = {
         f"eval/{name}": float(np.mean([s["reward"] for s in summaries])),
         f"eval/{name}-truncated_ratio": float(np.mean([s["status"] == "truncated" for s in summaries])),
@@ -172,7 +169,7 @@ def host_memory_gb() -> dict:
 class MetricsLogger:
     """Writes metric records to ``<log_dir>/metrics.jsonl`` and to wandb; rank 0 only."""
 
-    # wandb x-axes, as miles defines them: each metric family is plotted against its own step counter.
+    # wandb x-axes: each metric family is plotted against its own step counter.
     STEP_KEYS = {"eval/": "eval/step", "train/": "train/step"}
 
     def __init__(self, log_dir: str = "", wandb_project: str = "", wandb_run_name: str = "", config: dict = None):

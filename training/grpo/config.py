@@ -32,7 +32,6 @@ class RolloutConfig(_BaseRolloutConfig):
     # Generated tokens per trajectory, summed over its turns.
     max_new_tokens: int = 8192
     # Generated tokens per turn, on top of max_new_tokens; None caps turns only by what is left of it.
-    # miles' rollout_max_response_len is a per-turn cap.
     max_new_tokens_per_turn: Optional[int] = None
     temperature: float = 1.0
     n_samples_per_prompt: int = 8
@@ -66,11 +65,10 @@ class AlgorithmConfig:
     eps_clip_high: float = 0.28
     # Sequence positions per LM-head chunk when computing token log-probs.
     logprob_chunk_size: int = 1024
-    # miles' retool reward bonus for tool calls on wrong answers.
+    # Reward bonus for tool calls on wrong answers.
     tool_call_bonus: bool = False
     # "token_mean": every generated token of the step weighs the same.
-    # "sample_mean": each trajectory's loss is averaged over its own tokens, then over trajectories,
-    # as miles does without --calculate-per-token-loss.
+    # "sample_mean": each trajectory's loss is averaged over its own tokens, then over trajectories.
     loss_aggregation: str = "token_mean"
 
 
@@ -110,7 +108,7 @@ class DataConfig:
 class EvalConfig:
     # Empty path disables evaluation.
     path: str = ""
-    # Metric names are eval/<name>, as in miles.
+    # Metric names are eval/<name>.
     name: str = "aime"
     interval: int = 20
     # Evaluate once more after the last step.

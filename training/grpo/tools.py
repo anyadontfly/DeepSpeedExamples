@@ -2,11 +2,10 @@
 # DeepSpeed Team
 """A Python code interpreter the model calls during rollout.
 
-Ported from miles' retool sandbox (``examples/retool_v2/tool_sandbox.py`` in
-https://github.com/radixark/miles): the same import allowlist, pattern
-filter, memory limit, timeout and output format, run as an async subprocess
-so concurrent calls do not block each other. The filter only screens
-obvious misuse; it is not a security boundary.
+Code passes an import allowlist and a pattern filter, then runs under a
+memory limit and a timeout, as an async subprocess so concurrent calls do not
+block each other. The filter only screens obvious misuse; it is not a security
+boundary.
 """
 
 import asyncio
@@ -66,7 +65,7 @@ DANGEROUS_PATTERNS = [
 ]
 
 # The user code runs inside a try block so its output and errors come back in
-# the format the miles recipe trains with.
+# the format the model trains with.
 WRAPPER = """import sys
 import traceback
 from io import StringIO
@@ -140,7 +139,7 @@ class CodeInterpreter(Tool):
         self.memory_limit = memory_limit_gb * 1024**3
         self.max_concurrency = max_concurrency
         self.max_output_chars = max_output_chars
-        # metrics.SpanLog: one record per call, as miles' retool_perf_hooks.execute_tool writes.
+        # metrics.SpanLog: one record per call.
         self.span_log = span_log
         self._loop = None
         self._semaphore = None
@@ -171,7 +170,7 @@ class CodeInterpreter(Tool):
                 "code_chars": len(code_text),
                 "result_chars": len(output),
                 "error": output.startswith("Error"),
-                # Slow calls keep their code, as in miles' perf log.
+                # Slow calls keep their code.
                 **({
                     "code": code_text,
                     "result": output[:500]

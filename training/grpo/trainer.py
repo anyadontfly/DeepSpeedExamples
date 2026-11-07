@@ -154,7 +154,7 @@ class GRPOTrainer:
                 metrics = self._train_step(rows)
                 self.step += 1
                 if self.step % self.cfg.training.logging_steps == 0:
-                    # Rollout and train metrics are numbered by the step that produced them, from 0, as in miles.
+                    # Rollout and train metrics are numbered by the step that produced them, from 0.
                     self._log(metrics, prefix="train", step_key="rollout/step", step=self.step - 1)
                 if self.step % self.cfg.training.save_steps == 0:
                     self._save()
@@ -165,7 +165,7 @@ class GRPOTrainer:
             self._save()
 
     def _eval_due(self) -> bool:
-        """Evaluate before training starts and every ``eval.interval`` steps, as miles does."""
+        """Evaluate before training starts and every ``eval.interval`` steps."""
         return bool(self.cfg.eval.path) and self.cfg.eval.interval > 0 and self.step % self.cfg.eval.interval == 0
 
     # ------------------------------------------------------------------
@@ -268,7 +268,7 @@ class GRPOTrainer:
         return metrics
 
     def _step_metrics(self, samples, rewards, profiles, update, rollout_time, train_time) -> dict:
-        """The step's rollout, train and perf metrics under miles' names, over all ranks."""
+        """The step's rollout, train and perf metrics, over all ranks."""
         world_size = dist.get_world_size()
         metrics = M.rollout_metrics(self._summaries(samples, rewards), self.cfg.rollout.max_new_tokens_per_turn)
         totals = _sum_across_ranks(update)
@@ -339,7 +339,7 @@ class GRPOTrainer:
             clipped = -advantage * ratio.clamp(1 - eps_low, 1 + eps_high)
             token_loss = torch.maximum(unclipped, clipped) * mask
             with torch.no_grad():
-                # miles' pg_clipfrac and ppo_kl; with one update per rollout the ratio is 1 and both are 0.
+                # pg_clipfrac and ppo_kl; with one update per rollout the ratio is 1 and both are 0.
                 update["loss_tokens"] += mask.sum().item()
                 update["clipped_tokens"] += ((clipped > unclipped).float() * mask).sum().item()
                 update["log_ratio_sum"] += (-ratio.detach().log() * mask).sum().item()
