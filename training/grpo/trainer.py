@@ -272,9 +272,10 @@ class GRPOTrainer:
         totals = _sum_across_ranks(update)
         grad_norm = self.engine.get_global_grad_norm()
         metrics.update({
-            # Summed over ranks, the per-rank loss shares are the step loss; there is no KL or entropy term.
-            "train/loss": totals["loss"],
-            "train/pg_loss": totals["loss"],
+            # Each rank's loss is scaled by world_size / total, so their mean is the step loss; there is no KL or
+            # entropy term.
+            "train/loss": totals["loss"] / world_size,
+            "train/pg_loss": totals["loss"] / world_size,
             "train/pg_clipfrac": totals["clipped_tokens"] / max(totals["loss_tokens"], 1),
             "train/ppo_kl": totals["log_ratio_sum"] / max(totals["loss_tokens"], 1),
             "train/grad_norm": float(grad_norm) if grad_norm is not None else float("nan"),
@@ -304,7 +305,7 @@ class GRPOTrainer:
     def _update(self, samples, advantages) -> tuple:
         """One optimizer step over ``samples``: PPO-clip, averaged over all ranks.
 
-        Returns this rank's share of the step loss (summed over ranks it is the step loss) and this rank's
+        Returns this rank's loss (averaged over ranks it is the step loss) and this rank's
         counts for the train metrics: loss tokens, clipped tokens, the summed log-ratio and trained tokens.
         """
         sample_mean = self.cfg.algorithm.loss_aggregation == "sample_mean"
